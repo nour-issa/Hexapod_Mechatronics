@@ -16,7 +16,9 @@ The demo shows the robot walking with its tripod gait, using the real geometry o
 
 Open this link:
 
-**https://raw.githack.com/nour-issa/Hexapod_Mechatronics/main/CAD/demo/Hex3Bot_Demo.html**
+**https://nour-issa.github.io/Hexapod_Mechatronics/CAD/demo/Hex3Bot_Demo.html**
+
+(or the short one: https://nour-issa.github.io/Hexapod_Mechatronics/)
 
 ### Option 2: On your computer
 
