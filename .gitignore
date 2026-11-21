@@ -1,0 +1,14 @@
+# compiled helper programs and SolidWorks API DLLs (rebuild them, see README)
+*.exe
+*.dll
+
+# SolidWorks lock / temp files
+~$*
+*.tmp
+tmp.png
+
+# local tools
+.claude/
+
+# reference book excerpt (copyrighted, not ours to redistribute)
+*.pdf

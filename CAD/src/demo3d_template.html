@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hex3Bot Gait Demo</title>
+<style>
+  :root { --bg:#f3f3f1; --panel:#ffffff; --ink:#1c1e21; --muted:#6b6b6b; --line:#dedede; --accent:#c38d22; --go:#d4561e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#17181a; --panel:#222326; --ink:#ececec; --muted:#9b9b9b; --line:#34363a; } }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,"Segoe UI",sans-serif; }
+  .app { display:grid; grid-template-columns: 1fr 340px; height:100vh; }
+  #view { position:relative; min-height:300px; }
+  #view canvas { display:block; }
+  .hud { position:absolute; left:12px; top:12px; display:flex; gap:6px; flex-wrap:wrap; }
+  .hud button { background:rgba(255,255,255,.85); }
+  .legend { position:absolute; left:12px; bottom:12px; font-size:12px; color:#333; background:rgba(255,255,255,.85); padding:6px 10px; border-radius:6px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 4px 0 10px; vertical-align:middle; }
+  aside { background:var(--panel); border-left:1px solid var(--line); padding:16px; overflow:auto; }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { color:var(--muted); margin:0 0 12px; font-size:13px; }
+  button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--ink); cursor:pointer; }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .cap { border:1px solid var(--line); border-radius:8px; padding:10px 12px; min-height:92px; margin:10px 0; background:var(--bg); }
+  .cap b { color:var(--accent); }
+  ol { padding-left:20px; margin:6px 0; }
+  ol li { color:var(--muted); padding:2px 0; }
+  ol li.cur { color:var(--ink); font-weight:600; }
+  label { display:block; margin:8px 0 2px; font-size:13px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .val { float:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .chk { display:flex; gap:6px; align-items:center; margin:6px 0; font-size:13px; }
+  hr { border:0; border-top:1px solid var(--line); margin:12px 0; }
+  .small { font-size:12px; color:var(--muted); }
+  @media (max-width: 800px) { .app { grid-template-columns:1fr; grid-template-rows: 55vh auto; height:auto; } aside { border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="view">
+    <div class="hud">
+      <button data-v="iso" class="on">3D</button><button data-v="front">Front</button><button data-v="side">Side</button><button data-v="top">Top</button>
+    </div>
+    <div class="legend">Feet:<span class="dot" style="background:#d4561e"></span>on the ground<span class="dot" style="background:#9aa0a6"></span>in the air &nbsp;·&nbsp; drag to orbit, scroll to zoom</div>
+  </div>
+  <aside>
+    <h1>Hex3Bot: 3-servo hexapod</h1>
+    <p class="sub">Geometry exported from the SolidWorks assembly. Motion uses the same linkages as the mates.</p>
+    <div class="row">
+      <button id="play" class="on">Pause</button>
+      <button id="stepBtn">Next step</button>
+      <button id="reset">Reset</button>
+    </div>
+    <label>Speed <span class="val" id="spdV">1.0×</span></label>
+    <input id="spd" type="range" min="0.25" max="2.5" step="0.05" value="1">
+    <div class="chk"><input type="checkbox" id="ground" checked><label for="ground" style="margin:0">Real ground contact (body tilts and walks)</label></div>
+    <div class="chk"><input type="checkbox" id="slow"><label for="slow" style="margin:0">Pause briefly between steps</label></div>
+    <div class="cap" id="cap"></div>
+    <ol id="steps"></ol>
+    <hr>
+    <b>Drive the servos yourself</b>
+    <p class="small">Moving a slider pauses the gait.</p>
+    <label>Left legs servo (sweep) <span class="val" id="lV"></span></label>
+    <input id="sl" type="range" min="-30" max="30" step="0.5" value="0">
+    <label>Right legs servo (sweep) <span class="val" id="rV"></span></label>
+    <input id="sr" type="range" min="-30" max="30" step="0.5" value="0">
+    <label>Middle servo (rocker) <span class="val" id="mV"></span></label>
+    <input id="sm" type="range" min="-60" max="60" step="0.5" value="0">
+    <p class="small">Sweep +: feet move backward (a power stroke if those feet are on the ground). Rocker +: right middle leg pushes down.</p>
+    <hr>
+    <p class="small"><b>Walked:</b> <span id="dist">0</span> mm forward</p>
+  </aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/*MODELS*/
+// ---------- geometry from the CAD model (SolidWorks frame, mm): x = left, y = up, z = forward ----------
+const D2R = Math.PI / 180;
+const PIV_X = 34.15, REAR_Z = 32.65, FRONT_Z = 153.3, LINK_OFF = 19.05;
+const MID_X = 72.2, MID_Y = 61.35, H2 = 22.2, SHORT = 82.6;
+const TH = Math.acos(61.35 / 68.2);
+const H2R = [MID_X + H2 * Math.sin(TH), MID_Y - H2 * Math.cos(TH)]; // |x|, y of middle-leg link hole
+const HORN_Y = (H2R[1] - Math.sqrt(SHORT * SHORT - (H2R[0] - 5) ** 2)) + 8.66;
+const HOLE_DY = -8.66, HOLE_DX = 5;
+const COLORS = { pvc: 0x6b7178, brass: 0xc9a043, servo: 0x1b1b1b, horn: 0xeeeeea };
+function colorFor(n) {
+  if (n.startsWith("Link")) return COLORS.brass;
+  if (n.startsWith("Servo_Standard")) return COLORS.servo;
+  if (n.includes("Horn")) return COLORS.horn;
+  return COLORS.pvc;
+}
+
+// ---------- three.js scene ----------
+const view = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9eaec);
+const camera = new THREE.PerspectiveCamera(35, 1, 1, 10000);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+sun.position.set(300, 600, 250); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -400, right: 400, top: 400, bottom: -400, near: 10, far: 2000 });
+scene.add(sun); scene.add(sun.target);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.ShadowMaterial({ opacity: 0.18 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const grid = new THREE.GridHelper(6000, 120, 0xb5b8bc, 0xcfd2d6); grid.position.y = 0.05; scene.add(grid);
+
+function parseSTL(b64) {
+  const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const dv = new DataView(buf), n = dv.getUint32(80, true);
+  const pos = new Float32Array(n * 9);
+  for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) pos[i * 9 + k] = dv.getFloat32(84 + i * 50 + 12 + k * 4, true);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+const body = new THREE.Group(); body.matrixAutoUpdate = false; scene.add(body);
+const meshes = {};
+for (const [name, b64] of Object.entries(MODELS)) {
+  const mat = new THREE.MeshStandardMaterial({ color: colorFor(name), metalness: name.startsWith("Link") ? 0.6 : 0.05, roughness: name.startsWith("Link") ? 0.35 : 0.7 });
+  const m = new THREE.Mesh(parseSTL(b64), mat);
+  m.castShadow = true; m.matrixAutoUpdate = false;
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry, 25), new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 }));
+  m.add(edges);
+  body.add(m); meshes[name] = m;
+}
+const feetMarkers = [];
+for (let i = 0; i < 6; i++) { const s = new THREE.Mesh(new THREE.SphereGeometry(4, 16, 12), new THREE.MeshBasicMaterial({ color: 0x9aa0a6 })); scene.add(s); feetMarkers.push(s); }
+
+// ---------- kinematics ----------
+const M4 = () => new THREE.Matrix4();
+function rotAbout(axis, ang, px, py, pz) {
+  return M4().makeTranslation(px, py, pz).multiply(M4().makeRotationAxis(axis, ang)).multiply(M4().makeTranslation(-px, -py, -pz));
+}
+const AY = new THREE.Vector3(0, 1, 0), AZ = new THREE.Vector3(0, 0, 1);
+function rot2(x, y, a) { const c = Math.cos(a), s = Math.sin(a); return [x * c - y * s, x * s + y * c]; }
+const betaCache = { "-1": 0, "1": 0 };
+
+// state: sl, sr = sweep deg (+ = feet backward), rock = deg (+ = right middle foot down)
+let ROCK_SIGN = 1;
+function pose(st) {
+  const mats = {}, feet = []; // feet: [x,y,z] in body frame + tag
+  for (const side of [-1, 1]) {
+    const k = side < 0 ? 1 : 2;
+    const sweep = side < 0 ? st.sr : st.sl;
+    const phi = (side < 0 ? -sweep : sweep) * D2R; // rotation about +Y; right leg points -x
+    const px = side * PIV_X;
+    const Mr = rotAbout(AY, phi, px, 0, REAR_Z), Mf = rotAbout(AY, phi, px, 0, FRONT_Z);
+    mats["Leg_Upper_Rear-" + k] = Mr; mats["Servo_StarHorn-" + k] = Mr;
+    mats["Leg_Upper_Front-" + k] = Mf;
+    mats["Leg_Lower_FrontRear-" + (side < 0 ? 1 : 3)] = Mr;
+    mats["Leg_Lower_FrontRear-" + (side < 0 ? 2 : 4)] = Mf;
+    const o = new THREE.Vector3(side * LINK_OFF, 0, 0), ro = o.clone().applyAxisAngle(AY, phi);
+    mats["Link_Long_Brass-" + k] = M4().makeTranslation(ro.x - o.x, 0, ro.z - o.z);
+    for (const z of [REAR_Z, FRONT_Z]) {
+      const f = new THREE.Vector3(side * 116.2, 0, z).applyMatrix4(z === REAR_Z ? Mr : Mf);
+      feet.push({ p: f, side, kind: "side" });
+    }
+  }
+  // middle rocker: horn rotates about the forward axis; each side is a four-bar (horn, short link, middle leg, frame)
+  const a = st.rock * ROCK_SIGN * D2R;
+  mats["Servo_RoundHorn-1"] = rotAbout(AZ, a, 0, HORN_Y, 0);
+  for (const side of [-1, 1]) {
+    const k = side < 0 ? 1 : 2;
+    const hx0 = side * HOLE_DX, hy0 = HORN_Y + HOLE_DY;
+    const hr = rot2(hx0, HOLE_DY, a), hx = hr[0], hy = HORN_Y + hr[1];
+    const px = side * MID_X, qx0 = side * H2R[0] - px, qy0 = H2R[1] - MID_Y;
+    const f = b => { const q = rot2(qx0, qy0, b); return Math.hypot(px + q[0] - hx, MID_Y + q[1] - hy) - SHORT; };
+    let b = betaCache[side];
+    for (let it = 0; it < 30; it++) { const e = 1e-6, d = (f(b + e) - f(b - e)) / (2 * e), v = f(b); if (Math.abs(v) < 1e-9 || d === 0) break; b -= v / d; }
+    betaCache[side] = b;
+    mats["Leg_Middle-" + k] = rotAbout(AZ, b, px, MID_Y, 0);
+    const q = rot2(qx0, qy0, b), lx = px + q[0], ly = MID_Y + q[1];
+    const g0 = Math.atan2(qy0 + MID_Y - hy0, qx0 + px - hx0), g1 = Math.atan2(ly - hy, lx - hx);
+    mats["Link_Short_Brass-" + k] = M4().makeTranslation(hx, hy, 0).multiply(M4().makeRotationZ(g1 - g0)).multiply(M4().makeTranslation(-hx0, -hy0, 0));
+    const ft = rot2(side * 102.0 - px, 0 - MID_Y, b);
+    feet.push({ p: new THREE.Vector3(px + ft[0], MID_Y + ft[1], 110.5), side, kind: "mid" });
+  }
+  return { mats, feet };
+}
+
+// roll the body about the forward axis so it rests on its lowest feet (minimum centre-of-mass height)
+function settle(feet, ground) {
+  if (!ground) return { roll: 0, h: 0 };
+  const H = r => { const s = Math.sin(r), c = Math.cos(r); let mn = Infinity; for (const f of feet) mn = Math.min(mn, f.p.x * s + f.p.y * c); return (55 * c) - mn; };
+  let best = 0, bv = H(0);
+  for (let r = -0.3; r <= 0.3; r += 0.002) { const v = H(r); if (v < bv - 1e-9) { bv = v; best = r; } }
+  let lo = best - 0.002, hi = best + 0.002;
+  for (let i = 0; i < 40; i++) { const m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3; if (H(m1) < H(m2)) hi = m2; else lo = m1; }
+  const roll = (lo + hi) / 2, s = Math.sin(roll), c = Math.cos(roll);
+  let mn = Infinity; for (const f of feet) mn = Math.min(mn, f.p.x * s + f.p.y * c);
+  return { roll, h: -mn };
+}
+
+// ---------- gait ----------
+const S = 25, R = 45;
+const KEYS = [
+  { rock: 0, r: 0, l: 0, t: "<b>Neutral.</b> All six feet on the ground." },
+  { rock: +R, r: 0, l: 0, t: "<b>1. Rock.</b> The middle servo turns: the RIGHT middle leg pushes down and the body rolls. The right front and rear feet lift off. Tripod on the ground: right middle + left front + left rear." },
+  { rock: +R, r: 0, l: +S, t: "<b>2. Power stroke (left).</b> The left servo sweeps the left legs backward. Their feet are on the ground, so the robot is pushed forward." },
+  { rock: +R, r: -S, l: +S, t: "<b>3. Return stroke (right).</b> The right legs are in the air, so the right servo swings them forward without moving the robot." },
+  { rock: -R, r: -S, l: +S, t: "<b>4. Rock the other way.</b> The LEFT middle leg pushes down. The left front and rear feet lift; the right front and rear feet touch down." },
+  { rock: -R, r: +S, l: +S, t: "<b>5. Power stroke (right).</b> The right legs, now on the ground, sweep backward and push the robot forward." },
+  { rock: -R, r: +S, l: -S, t: "<b>6. Return stroke (left).</b> The lifted left legs swing forward, ready for their next power stroke." },
+  { rock: +R, r: +S, l: -S, t: "<b>7. Rock back.</b> The RIGHT middle leg pushes down again: left feet down, right feet up." },
+  { rock: +R, r: +S, l: +S, t: "<b>8. Power stroke (left).</b> The left legs push backward again. The robot keeps moving forward." },
+  { rock: +R, r: -S, l: +S, t: "<b>9. Return stroke (right).</b> The right legs swing forward in the air. The cycle continues from step 4." },
+];
+const LOOP_FROM = 4; // after key 9 go back to key 4 (key 9 == key 3)
+const stepsEl = document.getElementById("steps");
+const LABELS = ["Rock right", "Left legs push", "Right legs return", "Rock left", "Right legs push", "Left legs return", "Rock right", "Left legs push", "Right legs return"];
+LABELS.forEach((t, i) => { const li = document.createElement("li"); li.textContent = t; stepsEl.appendChild(li); });
+
+let st = { sl: 0, sr: 0, rock: 0 }, from = { ...st }, seg = 1, t = 0, playing = true, manual = false, hold = 0;
+let walk = 0, lastFeet = null;
+function keyState(k) { return { sl: KEYS[k].l, sr: KEYS[k].r, rock: KEYS[k].rock }; }
+function setCaption(k) {
+  document.getElementById("cap").innerHTML = KEYS[k].t;
+  [...stepsEl.children].forEach((li, i) => li.classList.toggle("cur", i === k - 1));
+}
+function nextSeg() { from = keyState(seg); seg = seg + 1 >= KEYS.length ? LOOP_FROM : seg + 1; t = 0; setCaption(seg); }
+
+// figure out which horn direction pushes the right middle foot down
+(function calib() {
+  const base = pose({ sl: 0, sr: 0, rock: 0 }).feet.find(f => f.kind === "mid" && f.side < 0).p.y;
+  const test = pose({ sl: 0, sr: 0, rock: 10 }).feet.find(f => f.kind === "mid" && f.side < 0).p.y;
+  ROCK_SIGN = test < base ? 1 : -1; betaCache["-1"] = 0; betaCache["1"] = 0;
+})();
+
+function apply(dtWalk) {
+  const P = pose(st);
+  for (const [n, m] of Object.entries(meshes)) m.matrix.copy(P.mats[n] || M4());
+  const ground = document.getElementById("ground").checked;
+  const { roll, h } = settle(P.feet, ground);
+  // walking: grounded side feet do not slip, so the body moves opposite to their sweep
+  const s = Math.sin(roll), c = Math.cos(roll);
+  const ys = P.feet.map(f => f.p.x * s + f.p.y * c + h);
+  if (ground && lastFeet && dtWalk) {
+    let sum = 0, n = 0;
+    P.feet.forEach((f, i) => { if (f.kind === "side" && ys[i] < 0.6) { sum += f.p.z - lastFeet[i]; n++; } });
+    if (n) walk -= sum / n;
+  }
+  lastFeet = P.feet.map(f => f.p.z);
+  const B = M4().makeTranslation(0, h, ground ? walk : 0).multiply(M4().makeRotationZ(roll));
+  body.matrix.copy(B); body.matrixWorldNeedsUpdate = true;
+  P.feet.forEach((f, i) => {
+    feetMarkers[i].position.copy(f.p.clone().applyMatrix4(B));
+    feetMarkers[i].material.color.set(ys[i] < 0.6 ? 0xd4561e : 0x9aa0a6);
+  });
+  document.getElementById("dist").textContent = Math.round(walk);
+  document.getElementById("lV").textContent = st.sl.toFixed(0) + "°";
+  document.getElementById("rV").textContent = st.sr.toFixed(0) + "°";
+  document.getElementById("mV").textContent = st.rock.toFixed(0) + "°";
+  if (!manual) { sl.value = st.sl; sr.value = st.sr; sm.value = st.rock; }
+}
+
+// ---------- camera ----------
+let follow = 0;
+function setView(v) {
+  document.querySelectorAll(".hud button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  const z = 90 + walk, tg = new THREE.Vector3(0, 40, z);
+  const P = { iso: [430, 290, z + 420], front: [0, 60, z + 520], side: [560, 70, z], top: [0, 620, z + 1] }[v];
+  camera.position.set(...P); controls.target.copy(tg); controls.update();
+}
+document.querySelectorAll(".hud button").forEach(b => b.onclick = () => setView(b.dataset.v));
+function resize() { const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize);
+
+// ---------- UI ----------
+const sl = document.getElementById("sl"), sr = document.getElementById("sr"), sm = document.getElementById("sm");
+function setPlay(p) { playing = p; manual = !p && manual; const b = document.getElementById("play"); b.textContent = p ? "Pause" : "Play"; b.classList.toggle("on", p); if (p) { manual = false; from = { ...st }; t = 0; } }
+document.getElementById("play").onclick = () => setPlay(!playing);
+document.getElementById("stepBtn").onclick = () => { setPlay(false); manual = false; from = { ...st }; st = keyState(seg); apply(true); nextSeg(); };
+document.getElementById("reset").onclick = () => { st = { sl: 0, sr: 0, rock: 0 }; from = { ...st }; seg = 1; t = 0; walk = 0; lastFeet = null; betaCache["-1"] = betaCache["1"] = 0; setCaption(1); apply(false); setView("iso"); };
+for (const [el, key] of [[sl, "sl"], [sr, "sr"], [sm, "rock"]]) el.oninput = () => { setPlay(false); manual = true; st[key] = +el.value; apply(true); };
+const spd = document.getElementById("spd");
+spd.oninput = () => document.getElementById("spdV").textContent = (+spd.value).toFixed(2).replace(/0$/, "") + "×";
+document.getElementById("ground").onchange = () => { walk = 0; lastFeet = null; apply(false); };
+
+// ---------- loop ----------
+let last = performance.now(), prevWalk = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (playing) {
+    if (hold > 0) hold -= dt * +spd.value;
+    else {
+      t += dt * +spd.value / 1.1;
+      const e = t >= 1 ? 1 : t * t * (3 - 2 * t), to = keyState(seg);
+      st = { sl: from.sl + (to.sl - from.sl) * e, sr: from.sr + (to.sr - from.sr) * e, rock: from.rock + (to.rock - from.rock) * e };
+      apply(true);
+      if (t >= 1) { nextSeg(); if (document.getElementById("slow").checked) hold = 0.6; }
+    }
+  }
+  // camera follows the robot forward
+  const dz = walk - prevWalk; prevWalk = walk;
+  if (dz) { camera.position.z += dz; controls.target.z += dz; }
+  sun.position.z = 250 + walk; sun.target.position.set(0, 0, walk);
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+resize(); setCaption(1); apply(false); setView("iso"); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
